@@ -7,3 +7,4 @@
   scrapy crawl iqiyi
   
   
+目前只支持采集到数据库，后期加入excel或csv文件的方式，期待后期更新。。。
