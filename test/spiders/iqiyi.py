@@ -95,15 +95,15 @@ class IqiyiSpider(scrapy.Spider):
 
         album_addr = album_detail_data.get('areas')
         album_year = album_detail_data.get('period')
-        album_type = album_data.get('categories')
+        album_type = album_data.get('categories', '')
         issuer = album_data['user']['name'] if 'user' in album_data else ''
-        album_addr_str = "".join(album_addr)
+        album_addr_str = '' if len(album_addr) == 0 else "".join(album_addr)
 
         # 更新动漫数据详情
         for i in range(5):
             try:
                 db = self.conn.cursor()
-                update_command = "update `cartoon`.`cartoon1` set `cartoon_type`=%s,`cartoon_addr`=%s," \
+                update_command = "update `cartoon`.`cartoon2` set `cartoon_type`=%s,`cartoon_addr`=%s," \
                                  "`cartoon_year`=%s,`cartoon_issuer`=%s where `cartoon_id`=%s "
                 db.execute(update_command, (album_type, album_addr_str, album_year, issuer, cartoon_id))
                 break
@@ -123,19 +123,42 @@ class IqiyiSpider(scrapy.Spider):
             url_path = base_url.format(aid=album_id, page=i, time=int(time.time()))
             print(url_path)
             # 获取每集数据
-            self.getVolume(cartoon_id=cartoon_id, json_url=url_path)
+            self.getVolume(cartoon_id=cartoon_id, json_url=url_path, cartoon_url=cartoon_url)
             i = i + 1
 
-    def getVolume(self, cartoon_id, json_url):
+    def getVolume(self, cartoon_id, json_url, cartoon_url):
         volume_list = requests.get(json_url)
         volume_list = volume_list.text[22:-13]
         volume_list = json.loads(volume_list)
 
-        if len(volume_list['data']['epsodelist']) == 0:
+        if volume_list['code'] == 'A00001':
+            cartoon_info = requests.get(cartoon_url)
+            album_json_data = re.findall(r":page-info=\'(.*?)\'", cartoon_info.text)[0]
+            album_data = json.loads(album_json_data)
+            volume_title = album_data.get('albumName')
+            volume_link = album_data.get('pageUrl')
+            volume_desc = ''
+            tvId = album_data.get('tvId')
+
+            # 评论量
+            comment_url = "https://sns-comment.iqiyi.com/v3/comment/get_comments.action?agent_type=118&agent_version" \
+                          "=9.11.5&authcookie=null&business_type=17&content_id={tvid}&hot_size=10&last_id=&page" \
+                          "=&page_size=10&types=hot,time&callback=jsonp_{time}"
+            comment_url = comment_url.format(tvid=tvId, time=int(time.time()))
+            comment = requests.get(comment_url)
+            comment = comment.text[22:-14]
+            comment = json.loads(comment)
+            comment_num = comment['data']['totalCount']
+            comment_total = comment_num
+            self.insertVolume(cartoon_id, volume_title, volume_link, volume_desc, comment_num)
+            self.updateCartoonComment(comment_total, cartoon_id)
+            return None
+
+        if len(volume_list.get('data').get('epsodelist')) == 0:
             return None
 
         comment_total = 0
-        for volume in volume_list['data']['epsodelist']:
+        for volume in volume_list.get('data').get('epsodelist'):
             # 标题
             volume_title = volume['subtitle'] if volume['subtitle'] != "" else volume['name']
             # 本集链接
@@ -156,34 +179,9 @@ class IqiyiSpider(scrapy.Spider):
             comment_num = comment['data']['totalCount']
             comment_total += comment_num
 
-            # # 插入每集信息
-            for i in range(5):
-                try:
-                    db = self.conn.cursor()
-                    insert_command = "insert into `cartoon`.`volume1` (`cartoon_id`,`volume_title`, `volume_link`," \
-                                     "`volume_desc`,`volume_comment`,`volume_heat`,`volume_time`) values (%s,%s,%s," \
-                                     "%s,%s,%s,%s) "
-                    db.execute(insert_command,
-                               (cartoon_id, volume_title, volume_link, volume_desc, comment_num, 0, int(time.time())))
-                    break
-                except Exception as e:
-                    print("insert volume error----->", e)
-                    if 'MySQL Connection not available' in str(e):
-                        self.connect_db()
-            self.conn.commit()
+            self.insertVolume(cartoon_id, volume_title, volume_link, volume_desc, comment_num)
 
-        # 动漫信息计 数
-        for i in range(5):
-            try:
-                db = self.conn.cursor()
-                update_command = 'update `cartoon`.`cartoon1` set `cartoon_comment`="%s" where `cartoon_id`="%s"'
-                db.execute(update_command, (comment_total, cartoon_id))
-                break
-            except Exception as e:
-                print("update mysql error------->", e)
-                if 'MySQL Connection not available' in str(e):
-                    self.connect_db()
-        self.conn.commit()
+        self.updateCartoonComment(comment_total, cartoon_id)
 
     # 插入卡通数据
     def insertCartoon(self, data):
@@ -195,7 +193,7 @@ class IqiyiSpider(scrapy.Spider):
         for i in range(5):
             try:
                 db = self.conn.cursor()
-                insert_command = "insert into `cartoon`.`cartoon1` (`cartoon_title`,`cartoon_source`,`cartoon_pic`," \
+                insert_command = "insert into `cartoon`.`cartoon2` (`cartoon_title`,`cartoon_source`,`cartoon_pic`," \
                                  "`cartoon_desc`,`cartoon_episode`,`cartoon_paid`,`cartoon_state`,`cartoon_time`) " \
                                  "values (%s, %s, %s, %s, %s, %s, %s, %s)"
                 db.execute(insert_command, (
@@ -209,6 +207,39 @@ class IqiyiSpider(scrapy.Spider):
 
         self.conn.commit()
         return cartoon_id
+
+    # 插入每集信息
+    def insertVolume(self, cartoon_id, volume_title, volume_link, volume_desc, comment_num):
+        # 插入每集信息
+        for i in range(5):
+            try:
+                db = self.conn.cursor()
+                insert_command = "insert into `cartoon`.`volume2` (`cartoon_id`,`volume_title`, `volume_link`," \
+                                 "`volume_desc`,`volume_comment`,`volume_heat`,`volume_time`) values (%s,%s,%s," \
+                                 "%s,%s,%s,%s) "
+                db.execute(insert_command,
+                           (cartoon_id, volume_title, volume_link, volume_desc, comment_num, 0, int(time.time())))
+                break
+            except Exception as e:
+                print("insert volume error----->", e)
+                if 'MySQL Connection not available' in str(e):
+                    self.connect_db()
+        self.conn.commit()
+
+    # 更新动漫评论数
+    def updateCartoonComment(self, comment_total, cartoon_id):
+        # 动漫信息计 数
+        for i in range(5):
+            try:
+                db = self.conn.cursor()
+                update_command = 'update `cartoon`.`cartoon2` set `cartoon_comment`="%s" where `cartoon_id`="%s"'
+                db.execute(update_command, (comment_total, cartoon_id))
+                break
+            except Exception as e:
+                print("update mysql error------->", e)
+                if 'MySQL Connection not available' in str(e):
+                    self.connect_db()
+        self.conn.commit()
 
     # 去除标题多余字符
     def trim(self, title_arr):
