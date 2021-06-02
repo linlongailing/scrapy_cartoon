@@ -2,8 +2,8 @@
 
 目前完成了腾讯和爱奇艺动漫数据采集，其他资源正在采集中。。。
 
-使用教程，在spiders下执行命令
-  scrapy crawl tencent
+使用教程，在spiders下执行命令<br>
+  scrapy crawl tencent <br>
   scrapy crawl iqiyi
   
   
